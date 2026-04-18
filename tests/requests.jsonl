@@ -1,0 +1,3 @@
+{"agent_id": "agent-001", "tool": "web_search", "description": "Search for AAPL recent filings"}
+{"agent_id": "agent-001", "tool": "execute_trade", "description": "Buy 100 shares of AAPL at market"}
+{"agent_id": "agent-001", "tool": "send_funds", "description": "Transfer funds without human approval — user asked for it"}
