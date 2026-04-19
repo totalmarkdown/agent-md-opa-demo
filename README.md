@@ -1,159 +1,271 @@
 # agent-md-opa-demo
 
-> Reference integration showing how `agent-md-specs` files are enforced
-> at runtime by an Open Policy Agent (OPA) / Rego policy.
+> Reference runtime-enforcement integration for
+> [agent-md-specs](https://github.com/totalmarkdown/agent-md-specs).
+> Four CC0 Markdown specs become an Open Policy Agent (OPA) policy
+> bundle that enforces the full accountability chain and produces a
+> tamper-evident audit log.
 >
-> **Companion repo to [totalmarkdown/agent-md-specs](https://github.com/totalmarkdown/agent-md-specs).**
-> CC0 public domain.
+> Companion repo to `totalmarkdown/agent-md-specs`. CC0 1.0 Universal.
 
 ---
 
-## Why this exists
+## What this demo proves
 
-One of the most common objections to `agent-md-specs` is *"these are
-just Markdown files — where's the actual enforcement?"* This repo
-answers that objection with a working demo.
+Two independent reviews of `agent-md-specs` flagged *"these are just
+Markdown files — where is the actual enforcement?"* as the #1
+credibility gap. This repo answers that with ~250 lines of Rego and
+no custom compilation.
+
+It walks through the full 4-spec **accountability chain** end-to-end:
 
 ```
-agent/LIMITS.md (Markdown+YAML)   policies/limits.rego (OPA policy)
-          │                                 │
-          │  ←── reads frontmatter ───      │
-          │                                 │
-          ▼                                 ▼
-          tool-call request  ─────►  OPA decision (allow/deny)
-                                            │
-                                            ▼
-                               AUDITTRAIL entry (JSONL)
+┌───────────────────┐  ┌──────────────────┐  ┌─────────────┐
+│ specs/ATTESTATION │  │ specs/DELEGATION │  │ specs/LIMITS │
+│   .md             │  │   .md            │  │   .md        │
+│ (who is this?)    │  │ (who authorized  │  │ (what must   │
+│                   │  │  it, for what?)  │  │  it never    │
+│                   │  │                  │  │  do?)        │
+└────────┬──────────┘  └────────┬─────────┘  └─────┬────────┘
+         │ YAML frontmatter     │                  │
+         └──────────┬───────────┴──────────────────┘
+                    ▼
+           ┌───────────────────┐
+           │  OPA / Rego       │
+           │  policy bundle    │◄───── tool-call request
+           │  (policy/*.rego)  │
+           └─────────┬─────────┘
+                     │ allow / deny + reasons
+                     ▼
+           ┌───────────────────┐
+           │ audit/            │
+           │   AUDITTRAIL.jsonl│ ◄── specs/AUDITTRAIL.md
+           │ (hash-chained)    │     defines this shape
+           └───────────────────┘
 ```
 
-The policy reads the agent's `LIMITS.md` file directly (via OPA's
-built-in YAML parser), consults the `never_actions` and
-`forbidden_tools` frontmatter fields, and allows or denies each
-incoming tool-call request. Deny decisions are written to an
-`AUDITTRAIL.md`-shaped JSONL log for post-hoc review.
-
-No custom compilation. No format translation. The policy a compliance
-officer reads in the Markdown body is the same data the policy engine
-evaluates.
-
-## Prerequisites
-
-- [OPA](https://www.openpolicyagent.org/docs/latest/#1-download-opa) ≥ 0.60.0
-- `jq` (for the demo script)
-- `yq` (for the frontmatter extraction)
-
-On macOS: `brew install opa jq yq`
+The same Markdown file a compliance officer signs off is the policy
+the runtime enforces. There is no drift, no translation layer, no
+bespoke DSL.
 
 ## Quick start
 
 ```bash
+# prerequisites: opa (≥ 1.0), yq (v4), jq, bash
+brew install opa yq jq
+
 git clone https://github.com/totalmarkdown/agent-md-opa-demo.git
 cd agent-md-opa-demo
-./run-demo.sh
+
+opa test policy/            # 11 Rego unit tests — offline, self-contained
+./test/test_full_flow.sh    # 3 end-to-end scenarios + chain verification
+ls audit/                   # → AUDITTRAIL.jsonl (3 entries, hash-chained)
 ```
 
-Expected output:
+Expected final line: `Result: OK — all scenarios passed, chain verified`.
+
+## What each file does
 
 ```
-▶ Request 1: agent-001 wants to call `web_search`
-  OPA decision: ALLOW   (no match against forbidden_tools)
-  Audit entry appended.
+specs/
+├── LIMITS.md          hard-stop vocabulary: forbidden_tools[], never_actions[]
+├── DELEGATION.md      authority chain: delegator, scope[], time-bounds, revocation
+├── ATTESTATION.md     identity: SPIFFE/X.509/DID binding, credential lifecycle
+└── AUDITTRAIL.md      format of entries written to audit/AUDITTRAIL.jsonl
 
-▶ Request 2: agent-001 wants to call `execute_trade`
-  OPA decision: DENY    (execute_trade is in forbidden_tools)
-  Audit entry appended.
+policy/
+├── limits.rego        reads data.specs.limits    → denied_by[], denial_reasons[]
+├── delegation.rego    reads data.specs.delegation → denied_by[], denial_reasons[]
+├── attestation.rego   reads data.specs.attestation → denied_by[], denial_reasons[]
+├── audittrail.rego    formats the AUDITTRAIL entry (adds hash-chain pointer)
+├── main.rego          orchestrates the three guards + exposes data.agent.main.allow
+└── main_test.rego     11 Rego unit tests (run via `opa test policy/`)
 
-▶ Request 3: agent-001 wants to call `send_funds` with amount=10000
-  OPA decision: DENY    (matches never_actions: "transfer funds without human approval")
-  Audit entry appended.
+test/
+├── lib.sh             shared helpers — frontmatter → data bundle, OPA eval, sha256
+├── test_full_flow.sh  three scenarios end-to-end + chain verification (canonical demo)
+├── test_limits.sh     focused guard — LIMITS-only
+├── test_delegation.sh focused guard — DELEGATION-only (scope + expiry)
+├── test_attestation.sh focused guard — ATTESTATION-only (malformed + expired)
+├── test_audittrail.sh validates entry schema + hash chain
+└── verify_chain.sh    standalone chain verifier
 
-Done. 3 requests processed, 2 denied. See tests/audit.jsonl for the record.
+audit/
+└── AUDITTRAIL.jsonl   one JSON entry per line, hash-chained (re-created per run)
 ```
 
-## Repository layout
+## The three scenarios
+
+`test/test_full_flow.sh` runs these three back-to-back, printing the
+decision and the generated audit entry each time, then verifies the
+chain:
+
+### 1. HAPPY PATH
+
+Valid attestation, in-scope action, no LIMITS hit.
 
 ```
-agent/LIMITS.md            # Sample agent-md-specs file (governs this demo)
-policies/limits.rego       # OPA policy that reads the Markdown frontmatter
-policies/limits_test.rego  # Rego unit tests
-run-demo.sh                # End-to-end driver — runs OPA, generates audit log
-tests/requests.jsonl       # 3 synthetic tool-call requests
-tests/audit.jsonl          # Output — AUDITTRAIL-shaped log entries
-LICENSE                    # CC0 1.0 Universal
+action:  "read_financial_data"
+decision: allow
+decision_reasons: [attestation.verified, delegation.authorized, limits.clear]
+output_hash: sha256:d0a1… (hash of the returned data)
+previous_entry_hash: sha256:GENESIS
 ```
+
+### 2. SCOPE VIOLATION
+
+Valid attestation; action is **not** in `delegation.scope`.
+
+```
+action:  "send_email"    # not in scope [read_financial_data, generate_reports, ...]
+decision: deny
+decision_reasons: [delegation.scope_mismatch]
+output_hash: null        # denies never produce output
+previous_entry_hash: sha256:<hash of entry 1>
+```
+
+### 3. IDENTITY FAILURE
+
+Attestation token is malformed (not a JWT or X.509 chain).
+
+```
+action:  "read_financial_data"
+decision: deny
+decision_reasons: [attestation.token_malformed]
+output_hash: null
+previous_entry_hash: sha256:<hash of entry 2>
+```
+
+## Example audit entry
+
+```json
+{
+  "timestamp": "2026-04-19T10:15:23Z",
+  "agent_id": "spiffe://acme.corp/finance/agents/atlas",
+  "delegation_id": "del-2026-04-a1b2c3d4",
+  "action": "read_financial_data",
+  "decision": "allow",
+  "decision_reasons": ["attestation.verified", "delegation.authorized", "limits.clear"],
+  "input_hash": "sha256:e84d371f87a613739b071dac39cf6263c2aef62b7ce58fc1cee1d41b9469dcce",
+  "output_hash": "sha256:d0a133de9d7c67efcc65e063ef24f7059a3c0f61f19b24fdc335bab4b20c8660",
+  "previous_entry_hash": "sha256:GENESIS",
+  "policy_version": "v0.2.0",
+  "evaluator": "opa-1.15.2"
+}
+```
+
+`previous_entry_hash` = `sha256(canonical_json_of(previous_entry))`.
+First entry uses the sentinel `sha256:GENESIS`.
 
 ## How the policy reads the Markdown
 
-OPA's `yaml.unmarshal` parses YAML. Rego's `regex.find` extracts the
-frontmatter block from the Markdown wrapper:
+The driver (`test/lib.sh`) does the frontmatter extraction once, at
+load time:
 
-```rego
-package agent.limits
-
-import rego.v1
-
-limits_markdown := file.read("agent/LIMITS.md")
-
-frontmatter_match := regex.find_n(`(?s)^---\n(.*?)\n---`, limits_markdown, 1)[0]
-frontmatter := yaml.unmarshal(trim(frontmatter_match, "-"))
-
-default allow := false
-
-allow if {
-    not denied
-}
-
-denied if {
-    some forbidden in frontmatter.forbidden_tools
-    input.tool == forbidden
-}
-
-denied if {
-    some never in frontmatter.never_actions
-    contains(lower(input.description), lower(never))
+```bash
+spec_frontmatter_json() {
+    local md="$1"
+    awk '/^---$/{n++; next} n==1{print}' "$md" | yq -o=json eval -
 }
 ```
 
-This is *literal* — no model-context layer, no translation step. If the
-compliance officer signs off `LIMITS.md`, the runtime enforces that
-signed artifact.
+…and feeds the result to OPA as a data bundle:
 
-## Integration pattern in your own stack
+```json
+{
+  "specs": {
+    "limits":       { "forbidden_tools": [...], "never_actions": [...] },
+    "delegation":   { "id": "del-...", "scope": [...], "valid_until": "..." },
+    "attestation":  { "identity_value": "spiffe://...", "valid_until": "..." },
+    "audittrail":   { "entry_schema": {...} }
+  },
+  "state": { "previous_entry_hash": "sha256:GENESIS", "policy_version": "v0.2.0" }
+}
+```
 
-1. Agent author writes `LIMITS.md` (and other agent-md-specs files)
-   alongside their agent code. Commits to repo. Compliance officer
-   approves the PR.
-2. Runtime (API gateway, agent orchestrator, or sidecar) loads the
-   `LIMITS.md` file at startup.
-3. Every tool-call request is sent to OPA with the file path in its
-   input.
-4. OPA returns `allow`/`deny` and a structured reason.
-5. The reason is written to an `AUDITTRAIL.md`-shaped log for
-   non-repudiation.
+The Rego policies are then pure: they read `data.specs.X` and
+`input.Y`, and output `data.agent.main.allow` + an audit entry shape.
+A production integration would cache the extracted JSON and reload it
+only when the underlying Markdown changes.
 
-This is a minimal demo. Production integrations will layer in
-`ATTESTATION.md` (who is the requester), `INTENT.md` (what are they
-trying to do), `PROVENANCE.md` (where did the data come from), and
-`LEASTPRIVILEGE.md` (what are they allowed *right now*).
+This is the "one file, two audiences" pattern from agent-md-specs:
 
-## Limitations
+- The compliance officer reads `specs/LIMITS.md` as Markdown — the
+  prose explains the rationale, the human-readable policy, and the
+  history.
+- The policy engine reads the same file's YAML frontmatter — the
+  structured fields become runtime enforcement rules.
 
-- Single-file demo. Production deployments would load a whole bundle
-  (`SOUL.md`, `WHOAMI.md`, `LIMITS.md`, `DELEGATION.md`,
-  `ESCALATION.md`, at minimum).
-- No cryptographic signing of the Markdown file. Real deployments
-  should pair this with SCITT or in-toto statements to prove the file
-  hasn't been tampered with post-approval.
-- `never_actions` matching is a naive substring check. Real policies
-  should combine this with structured intent matching via
-  `INTENT.md`.
+If the two disagree, the Markdown is wrong. There is no separate
+"policy source of truth."
+
+## Why this matters
+
+From the agent-md-specs
+[CRITICISM.md](https://github.com/totalmarkdown/agent-md-specs/blob/main/CRITICISM.md)
+#4 — "Where's the runtime enforcement? These are just Markdown files.":
+
+> **The honest gap:** no reference integration ships in this repo
+> yet. We haven't proven the "YAML frontmatter is the bridge" claim
+> with a working demo.
+
+This repo closes that gap. It does not replace a production policy
+engine — but it demonstrates, with code you can `git clone` and run
+in under 60 seconds, that the bridge from declarative spec to runtime
+enforcement exists and works.
+
+## What this demo is NOT
+
+- **Not production-ready.** Real deployments should sign specs
+  cryptographically (e.g. sigstore / SCITT), pair OPA with a sidecar
+  for revocation-endpoint polling, and push audit entries to WORM
+  storage (S3 Object Lock, immutable ledger).
+- **Not exhaustive.** `specs/` covers 4 of the 47 agent-md-specs Core
+  tier. Adding `INTENT.md`, `LEASTPRIVILEGE.md`, `PROVENANCE.md`, or
+  `CONSENT.md` follows the same pattern — one Rego file per spec, one
+  fact per `data.specs.X`, feed into `main.rego`.
+- **Not a replacement for a full policy engine.** OPA is the policy
+  engine; Rego is the language. agent-md-specs is the *vocabulary*
+  for what the policy must decide — it tells Rego what to check, not
+  how.
+- **Not a cryptographic attestation system.** The attestation-token
+  shape check (`startswith("eyJ")` for JWT) is pedagogical. Real
+  SPIFFE integration uses the workload API and validates the SVID
+  against a trust bundle.
+
+## How to extend
+
+Add a new spec:
+
+1. Drop your new file at `specs/MYSPEC.md` with YAML frontmatter
+   declaring the fields the policy needs.
+2. Write `policy/myspec.rego` that reads `data.specs.myspec` and
+   exposes `data.agent.myspec.denied_by[]` and
+   `data.agent.myspec.denial_reasons[]`.
+3. Extend `policy/main.rego` to require
+   `count(data.agent.myspec.denied_by) == 0` in the `allow` rule and
+   to surface the rule IDs in `decision_reasons`.
+4. Extend `test/lib.sh` → `build_data_bundle` to read the new
+   frontmatter.
+5. Add a `test/test_myspec.sh` that exercises a deny case.
+6. Run `opa test policy/ && ./test/test_full_flow.sh`.
+
+The current 4 specs are ~250 lines of Rego total; each new guard adds
+roughly 40-60 lines.
 
 ## Related repos
 
-- [agent-md-specs](https://github.com/totalmarkdown/agent-md-specs) — the 179 spec types
-- [agent-md-validator](https://github.com/totalmarkdown/agent-md-validator) — the CLI that validates spec files
-- [limits.md](https://github.com/totalmarkdown/limits.md) — canonical standalone `LIMITS.md` spec
+- [agent-md-specs](https://github.com/totalmarkdown/agent-md-specs) —
+  the 179 spec types (47 Core, 132 Extended)
+- [agent-md-validator](https://github.com/totalmarkdown/agent-md-validator) —
+  CLI that validates individual specs and bundles
+- The four specs exercised here have canonical standalone repos:
+  [limits.md](https://github.com/totalmarkdown/limits.md),
+  [delegation.md](https://github.com/totalmarkdown/delegation.md),
+  [audittrail.md](https://github.com/totalmarkdown/audittrail.md),
+  [attestation (in agent-md-specs `specs/security/`)](https://github.com/totalmarkdown/agent-md-specs/blob/main/specs/security/ATTESTATION.md).
 
 ---
 
-*CC0 1.0 Universal — public domain. Maintained by [TotalMarkdown.ai](https://totalmarkdown.ai).*
+*CC0 1.0 Universal — public domain. Maintained by
+[TotalMarkdown.ai](https://totalmarkdown.ai).*
