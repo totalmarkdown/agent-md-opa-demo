@@ -10,6 +10,14 @@
 
 ---
 
+## See it run
+
+[![asciicast](https://asciinema.org/a/948586.svg)](https://asciinema.org/a/948586)
+
+~2 seconds. 3 scenarios. Hash-chained audit log. Click to replay.
+
+---
+
 ## What this demo proves
 
 Two independent reviews of `agent-md-specs` flagged *"these are just
