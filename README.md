@@ -240,6 +240,7 @@ enforcement exists and works.
   shape check (`startswith("eyJ")` for JWT) is pedagogical. Real
   SPIFFE integration uses the workload API and validates the SVID
   against a trust bundle.
+- **Not tamper-proof against a privileged rewriter.** The chain detects modification but is not anchored or signed; a writer with full file access can recompute the entire chain. This is tamper-evident under an append-only assumption. Head anchoring (e.g. periodic signed checkpoints or an external transparency log) is the documented extension path.
 
 ## How to extend
 
@@ -272,6 +273,24 @@ roughly 40-60 lines.
   [delegation.md](https://github.com/totalmarkdown/delegation.md),
   [audittrail.md](https://github.com/totalmarkdown/audittrail.md),
   [attestation (in agent-md-specs `specs/security/`)](https://github.com/totalmarkdown/agent-md-specs/blob/main/specs/security/ATTESTATION.md).
+
+## Hardening path
+
+The hash chain in this demo is **tamper-evident**, not tamper-proof. It detects
+modification but cannot prevent a rewriter with full file access from recomputing
+the entire chain. Turning evidence into resistance requires anchoring:
+
+| Technique | What it adds |
+|-----------|-------------|
+| **Signed checkpoints** | Periodic cryptographic signatures over the chain head (e.g. agent X.509 key, sigstore) prevent silent rewriting after the signature point |
+| **WORM storage** | S3 Object Lock, Azure Immutable Blob, or an append-only ledger prevent post-write deletion |
+| **External transparency log** | Submit chain-head hashes to a public or enterprise log (SCITT, Rekor); independent witnesses verify non-equivocation |
+| **Blockchain anchor** | Periodic Merkle root publication to an immutable ledger provides external, timestamped proof of existence |
+
+These are production-grade extensions documented in the
+[agent-md-specs AUDITTRAIL.md spec](https://github.com/totalmarkdown/agent-md-specs/blob/main/specs/compliance/AUDITTRAIL.md#hardening-path).
+The demo deliberately ships without them to keep the runnable example
+minimal; each technique is a one-step addition to the existing Rego + shell stack.
 
 ---
 
